@@ -74,7 +74,6 @@ func contains(s []rune, e rune) bool {
 }
 
 func handleClient(conn net.Conn, users []User, players chan Player) {
-	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 	var ok bool
@@ -116,7 +115,7 @@ func chat(player1, player2 Player) {
 
 	// Start the chat loop
 	go messageLoop(player1, player2)
-	messageLoop(player2, player1) // Run one loop in the current goroutine
+	go messageLoop(player2, player1) // Run one loop in the current goroutine
 }
 
 func messageLoop(sender Player, receiver Player) {
@@ -134,8 +133,9 @@ func messageLoop(sender Player, receiver Player) {
 				sender.Conn.Close()
 				return
 			}
+			// If other error, print and break
 			fmt.Println("Error reading message:", err)
-			return
+			break
 		}
 
 		message = strings.TrimSpace(message)
@@ -143,6 +143,12 @@ func messageLoop(sender Player, receiver Player) {
 		if message == "exit" {
 			sender.Conn.Write([]byte("You have left the chat.\n"))
 			sender.Conn.Close()
+			return
+		}
+
+		// Check if receiver connection is closed
+		if receiver.Conn == nil {
+			sender.Conn.Write([]byte("The other player has disconnected.\n"))
 			return
 		}
 
@@ -173,7 +179,6 @@ func main() {
 	players := make(chan Player)
 	for {
 		conn, err := listener.Accept()
-		fmt.Print(conn)
 		if err != nil {
 			fmt.Println("Connection error:", err)
 			continue
@@ -188,6 +193,9 @@ func main() {
 
 			// Start chat with these two players
 			go chat(player1, player2)
+			for {
+			}
 		}()
+
 	}
 }
