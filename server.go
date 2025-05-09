@@ -13,6 +13,46 @@ import (
 	"time"
 )
 
+type Stats struct {
+	HP  int
+	ATK int
+	DEF int
+}
+
+type TowerType string
+type TroopType string
+
+const (
+	KingTower  TowerType = "King"
+	GuardTower TowerType = "Guard"
+)
+const (
+	GoblinTroop TroopType = "Goblin"
+	ArcherTroop TroopType = "Archer"
+	KnightTroop TroopType = "Knight"
+	WizardTroop TroopType = "Wizard"
+)
+
+type Troop struct {
+	ID    string
+	Name  string
+	Type  TroopType
+	Stats Stats
+}
+
+type Tower struct {
+	ID       string
+	Type     TowerType
+	Position int //0 for King; 1,2 for Guard
+	Stats    Stats
+	IsAlive  bool
+}
+type GameState struct {
+	Player1 *Player
+	Player2 *Player
+	Turn    int // Alternates between 1 and 2
+}
+
 type User struct {
 	Username  string
 	Password  string
@@ -21,14 +61,19 @@ type User struct {
 	Addresses []string
 }
 
-type Word struct {
-	Word        string `json:"word"`
-	Description string `json:"description"`
+func CalculateDamage(attackerATK, defenderDEF int) int {
+	damage := attackerATK - defenderDEF
+	if damage < 0 {
+		return 0
+	}
+	return damage
 }
 
 type Player struct {
 	Username string
 	Conn     net.Conn
+	Towers   []Tower
+	Troops   []Troop
 }
 
 func HashPassword(password string) string {
@@ -107,54 +152,136 @@ func handleClient(conn net.Conn, users []User, players chan Player) {
 
 }
 func chat(player1, player2 Player) {
-	fmt.Println("Starting chat between", player1.Username, "and", player2.Username)
+	fmt.Println("Starting game between", player1.Username, "and", player2.Username)
 
 	// Inform both players that the game/chat is starting
-	player1.Conn.Write([]byte("Both players are connected! You can now start chatting.\n"))
-	player2.Conn.Write([]byte("Both players are connected! You can now start chatting.\n"))
+	player1.Conn.Write([]byte("Both players are connected! You can now start playing.\n"))
+	player2.Conn.Write([]byte("Both players are connected! You can now start playing.\n"))
 
 	// Start the chat loop
-	go messageLoop(player1, player2)
-	go messageLoop(player2, player1) // Run one loop in the current goroutine
+	go gameLoop(player1, player2)
 }
 
-func messageLoop(sender Player, receiver Player) {
-	reader := bufio.NewReader(sender.Conn)
-	writer := bufio.NewWriter(sender.Conn)
+func gameLoop(player1, player2 Player) {
+	game := GameState{
+		Player1: &player1,
+		Player2: &player2,
+		Turn:    1,
+	}
+
+	// Initialize towers and troops for both players
+	// (you'll need to implement this)
+	setupPlayerAssets(game.Player1)
+	setupPlayerAssets(game.Player2)
+
+	player1.Conn.Write([]byte("Game started! You are Player 1.\n"))
+	player2.Conn.Write([]byte("Game started! You are Player 2.\n"))
 
 	for {
-		// Read the message from the sender
-		message, err := reader.ReadString('\n')
+		var currentPlayer, opponent *Player
+		if game.Turn == 1 {
+			currentPlayer = game.Player1
+			opponent = game.Player2
+		} else {
+			currentPlayer = game.Player2
+			opponent = game.Player1
+		}
+
+		currentPlayer.Conn.Write([]byte("Your turn. Type the name of your troop and target tower (e.g., Goblin G1):\n"))
+		opponent.Conn.Write([]byte("Waiting for the other player's move...\n"))
+
+		reader := bufio.NewReader(currentPlayer.Conn)
+		input, err := reader.ReadString('\n')
 		if err != nil {
-			// If the error is a connection closed error, notify and break the loop
-			if err.Error() == "use of closed network connection" {
-				fmt.Println(sender.Username, "disconnected.")
-				sender.Conn.Write([]byte("You have been disconnected.\n"))
-				sender.Conn.Close()
-				return
-			}
-			// If other error, print and break
-			fmt.Println("Error reading message:", err)
+			fmt.Println("Connection lost with", currentPlayer.Username)
 			break
 		}
 
-		message = strings.TrimSpace(message)
-
-		if message == "exit" {
-			sender.Conn.Write([]byte("You have left the chat.\n"))
-			sender.Conn.Close()
-			return
+		input = strings.TrimSpace(input)
+		if input == "exit" {
+			currentPlayer.Conn.Write([]byte("You exited the game.\n"))
+			break
 		}
 
-		// Check if receiver connection is closed
-		if receiver.Conn == nil {
-			sender.Conn.Write([]byte("The other player has disconnected.\n"))
-			return
-		}
+		// Parse and apply move (e.g., attack logic)
+		// result := applyMove(currentPlayer, opponent, input)
 
-		receiver.Conn.Write([]byte(fmt.Sprintf("%s: %s\n", sender.Username, message)))
-		writer.Flush()
+		// Send result to both players
+		// currentPlayer.Conn.Write([]byte(result))
+		// opponent.Conn.Write([]byte(result))
+
+		// Check win condition
+		// if isGameOver(opponent) {
+		//     currentPlayer.Conn.Write([]byte("You win!\n"))
+		//     opponent.Conn.Write([]byte("You lose.\n"))
+		//     break
+		// }
+
+		// Alternate turn
+		if game.Turn == 1 {
+			game.Turn = 2
+		} else {
+			game.Turn = 1
+		}
 	}
+}
+
+func setupPlayerAssets(player *Player) {
+	kingStats := Stats{HP: 200, ATK: 50, DEF: 30}
+	guardStats := Stats{HP: 100, ATK: 100, DEF: 50}
+	player.Towers = []Tower{
+		{
+			ID:       "K",
+			Type:     KingTower,
+			Position: 0,
+			Stats:    kingStats,
+			IsAlive:  true,
+		},
+		{
+			ID:       "G",
+			Type:     GuardTower,
+			Position: 1,
+			Stats:    guardStats,
+			IsAlive:  true,
+		},
+		{
+			ID:       "G",
+			Type:     GuardTower,
+			Position: 2,
+			Stats:    guardStats,
+			IsAlive:  true,
+		},
+	}
+	troopPool := []Troop{
+		{
+			ID:    "T1",
+			Name:  string(GoblinTroop),
+			Type:  GoblinTroop,
+			Stats: Stats{HP: 40, ATK: 30, DEF: 5},
+		},
+		{
+			ID:    "T2",
+			Name:  string(ArcherTroop),
+			Type:  ArcherTroop,
+			Stats: Stats{HP: 35, ATK: 25, DEF: 10},
+		},
+		{
+			ID:    "T3",
+			Name:  string(KnightTroop),
+			Type:  KnightTroop,
+			Stats: Stats{HP: 60, ATK: 40, DEF: 20},
+		},
+		{
+			ID:    "T4",
+			Name:  string(WizardTroop),
+			Type:  WizardTroop,
+			Stats: Stats{HP: 45, ATK: 50, DEF: 8},
+		},
+	}
+	rand.Shuffle(len(troopPool), func(i, j int) {
+		troopPool[i], troopPool[j] = troopPool[j], troopPool[i]
+	})
+	player.Troops = troopPool[:3]
 }
 
 func main() {
@@ -188,13 +315,13 @@ func main() {
 
 		// Wait for two players by receiving from the channel twice
 		go func() {
+
 			player1 := <-players
 			player2 := <-players
 
 			// Start chat with these two players
 			go chat(player1, player2)
-			for {
-			}
+
 		}()
 
 	}
