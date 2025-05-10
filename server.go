@@ -13,10 +13,19 @@ import (
 	"time"
 )
 
-type Stats struct {
-	HP  int
-	ATK int
-	DEF int
+type TowerStats struct {
+	HP   int
+	ATK  int
+	DEF  int
+	CRIT float32
+	EXP  int
+}
+type TroopStats struct {
+	HP   int
+	ATK  int
+	DEF  int
+	MANA int
+	EXP  int
 }
 
 type TowerType string
@@ -27,24 +36,26 @@ const (
 	GuardTower TowerType = "Guard"
 )
 const (
-	GoblinTroop TroopType = "Goblin"
-	ArcherTroop TroopType = "Archer"
+	PawnTroop   TroopType = "Pawn"
+	BishopTroop TroopType = "Bishop"
+	RookTroop   TroopType = "Rook"
 	KnightTroop TroopType = "Knight"
-	WizardTroop TroopType = "Wizard"
+	PrinceTroop TroopType = "Prince"
+	QueenTroop  TroopType = "Queen"
 )
 
 type Troop struct {
 	ID    string
 	Name  string
 	Type  TroopType
-	Stats Stats
+	Stats TroopStats
 }
 
 type Tower struct {
 	ID       string
 	Type     TowerType
 	Position int //0 for King; 1,2 for Guard
-	Stats    Stats
+	Stats    TowerStats
 	IsAlive  bool
 }
 type GameState struct {
@@ -173,6 +184,8 @@ func gameLoop(player1, player2 Player) {
 	// (you'll need to implement this)
 	setupPlayerAssets(game.Player1)
 	setupPlayerAssets(game.Player2)
+	sendTroopPool(&player1)
+	sendTroopPool(&player2)
 
 	player1.Conn.Write([]byte("Game started! You are Player 1.\n"))
 	player2.Conn.Write([]byte("Game started! You are Player 2.\n"))
@@ -203,19 +216,15 @@ func gameLoop(player1, player2 Player) {
 			break
 		}
 
-		// Parse and apply move (e.g., attack logic)
-		// result := applyMove(currentPlayer, opponent, input)
+		result := applyMove(currentPlayer, opponent, input)
+		currentPlayer.Conn.Write([]byte(result))
+		opponent.Conn.Write([]byte(result))
 
-		// Send result to both players
-		// currentPlayer.Conn.Write([]byte(result))
-		// opponent.Conn.Write([]byte(result))
-
-		// Check win condition
-		// if isGameOver(opponent) {
-		//     currentPlayer.Conn.Write([]byte("You win!\n"))
-		//     opponent.Conn.Write([]byte("You lose.\n"))
-		//     break
-		// }
+		if isGameOver(opponent) {
+			currentPlayer.Conn.Write([]byte("You win!\n"))
+			opponent.Conn.Write([]byte("You lose.\n"))
+			break
+		}
 
 		// Alternate turn
 		if game.Turn == 1 {
@@ -225,10 +234,74 @@ func gameLoop(player1, player2 Player) {
 		}
 	}
 }
+func sendTroopPool(player *Player) {
+	troopPoolMessage := "Your available Troops:\n"
+
+	// Loop through the player's randomly selected troops
+	for i, troop := range player.Troops {
+		troopPoolMessage += fmt.Sprintf("%d. %s: HP = %d, ATK = %d, DEF = %d, MANA = %d, EXP = %d\n",
+			i+1, troop.Name, troop.Stats.HP, troop.Stats.ATK, troop.Stats.DEF, troop.Stats.MANA, troop.Stats.EXP)
+	}
+
+	// Send the troop details to the player
+	player.Conn.Write([]byte(troopPoolMessage))
+}
+
+func applyMove(currentPlayer *Player, opponent *Player, input string) string {
+	parts := strings.Fields(input)
+	if len(parts) != 2 {
+		return "Invalid move format. Use 'TroopName TowerID'.\n"
+	}
+	troopName := parts[0]
+	towerID := parts[1]
+	var troop *Troop
+	for _, t := range currentPlayer.Troops {
+		if t.Name == troopName {
+			troop = &t
+			break
+		}
+	}
+	if troop == nil {
+		return fmt.Sprintf("Troop %s not found.\n", troopName)
+	}
+	var targetTower *Tower
+	for _, t := range opponent.Towers {
+		if t.ID == towerID {
+			targetTower = &t
+		}
+	}
+	if targetTower == nil {
+		return fmt.Sprintf("Target tower %s not found.\n", towerID)
+	}
+	if !targetTower.IsAlive {
+		return fmt.Sprintf("Tower %s is already destroyed.\n", towerID)
+	}
+	damage := CalculateDamage(troop.Stats.ATK, targetTower.Stats.DEF)
+	targetTower.Stats.HP -= damage
+	if targetTower.Stats.HP <= 0 {
+		targetTower.IsAlive = false
+	}
+	result := fmt.Sprintf("%s attacks %s with %s!\n", currentPlayer.Username, towerID, troopName)
+	if targetTower.IsAlive {
+		result += fmt.Sprintf("%s's %s tower has %d HP left.\n", opponent.Username, towerID, targetTower.Stats.HP)
+	} else {
+		result += fmt.Sprintf("%s's %s tower is destroyed!\n", opponent.Username, towerID)
+	}
+
+	return result
+}
+func isGameOver(player *Player) bool {
+	for _, tower := range player.Towers {
+		if tower.Type == KingTower && !tower.IsAlive {
+			return true
+		}
+	}
+	return false
+}
 
 func setupPlayerAssets(player *Player) {
-	kingStats := Stats{HP: 200, ATK: 50, DEF: 30}
-	guardStats := Stats{HP: 100, ATK: 100, DEF: 50}
+	kingStats := TowerStats{HP: 2000, ATK: 500, DEF: 300, CRIT: 0.1, EXP: 200}
+	guardStats := TowerStats{HP: 1000, ATK: 300, DEF: 100, CRIT: 0.05, EXP: 100}
 	player.Towers = []Tower{
 		{
 			ID:       "K",
@@ -255,27 +328,39 @@ func setupPlayerAssets(player *Player) {
 	troopPool := []Troop{
 		{
 			ID:    "T1",
-			Name:  string(GoblinTroop),
-			Type:  GoblinTroop,
-			Stats: Stats{HP: 40, ATK: 30, DEF: 5},
+			Name:  string(PawnTroop),
+			Type:  PawnTroop,
+			Stats: TroopStats{HP: 50, ATK: 150, DEF: 100, MANA: 3, EXP: 5},
 		},
 		{
 			ID:    "T2",
-			Name:  string(ArcherTroop),
-			Type:  ArcherTroop,
-			Stats: Stats{HP: 35, ATK: 25, DEF: 10},
+			Name:  string(BishopTroop),
+			Type:  BishopTroop,
+			Stats: TroopStats{HP: 100, ATK: 200, DEF: 150, MANA: 4, EXP: 10},
 		},
 		{
 			ID:    "T3",
-			Name:  string(KnightTroop),
-			Type:  KnightTroop,
-			Stats: Stats{HP: 60, ATK: 40, DEF: 20},
+			Name:  string(RookTroop),
+			Type:  RookTroop,
+			Stats: TroopStats{HP: 250, ATK: 200, DEF: 200, MANA: 5, EXP: 25},
 		},
 		{
 			ID:    "T4",
-			Name:  string(WizardTroop),
-			Type:  WizardTroop,
-			Stats: Stats{HP: 45, ATK: 50, DEF: 8},
+			Name:  string(KnightTroop),
+			Type:  KnightTroop,
+			Stats: TroopStats{HP: 200, ATK: 300, DEF: 150, MANA: 5, EXP: 25},
+		},
+		{
+			ID:    "T5",
+			Name:  string(PrinceTroop),
+			Type:  PrinceTroop,
+			Stats: TroopStats{HP: 500, ATK: 400, DEF: 300, MANA: 6, EXP: 50},
+		},
+		{
+			ID:    "T6",
+			Name:  string(QueenTroop),
+			Type:  QueenTroop,
+			Stats: TroopStats{MANA: 5, EXP: 30},
 		},
 	}
 	rand.Shuffle(len(troopPool), func(i, j int) {
