@@ -216,9 +216,7 @@ func gameLoop(player1, player2 Player) {
 			break
 		}
 
-		result := applyMove(currentPlayer, opponent, input)
-		currentPlayer.Conn.Write([]byte(result))
-		opponent.Conn.Write([]byte(result))
+		applyMove(currentPlayer, opponent, input)
 
 		if isGameOver(opponent) {
 			currentPlayer.Conn.Write([]byte("You win!\n"))
@@ -249,46 +247,73 @@ func sendTroopPool(player *Player) {
 
 func applyMove(currentPlayer *Player, opponent *Player, input string) string {
 	parts := strings.Fields(input)
+
 	if len(parts) != 2 {
-		return "Invalid move format. Use 'TroopName TowerID'.\n"
+		msg := "Invalid move format. Use 'TroopName TowerType'.\n"
+		currentPlayer.Conn.Write([]byte(msg))
+		return msg
 	}
 	troopName := parts[0]
-	towerID := parts[1]
+	towerType := parts[1]
 	var troop *Troop
-	for _, t := range currentPlayer.Troops {
-		if t.Name == troopName {
-			troop = &t
+	for i := range currentPlayer.Troops {
+		if currentPlayer.Troops[i].Name == troopName {
+			troop = &currentPlayer.Troops[i]
 			break
 		}
 	}
 	if troop == nil {
-		return fmt.Sprintf("Troop %s not found.\n", troopName)
+		msg := fmt.Sprintf("Troop %s not found.\n", troopName)
+		currentPlayer.Conn.Write([]byte(msg))
+		return msg
 	}
 	var targetTower *Tower
-	for _, t := range opponent.Towers {
-		if t.ID == towerID {
-			targetTower = &t
+	for i := range opponent.Towers {
+		if opponent.Towers[i].ID == towerType {
+			targetTower = &opponent.Towers[i]
+			break
 		}
 	}
 	if targetTower == nil {
-		return fmt.Sprintf("Target tower %s not found.\n", towerID)
+		msg := fmt.Sprintf("Target tower %s not found.\n", towerType)
+		currentPlayer.Conn.Write([]byte(msg))
+		return msg
 	}
 	if !targetTower.IsAlive {
-		return fmt.Sprintf("Tower %s is already destroyed.\n", towerID)
-	}
-	damage := CalculateDamage(troop.Stats.ATK, targetTower.Stats.DEF)
-	targetTower.Stats.HP -= damage
-	if targetTower.Stats.HP <= 0 {
-		targetTower.IsAlive = false
-	}
-	result := fmt.Sprintf("%s attacks %s with %s!\n", currentPlayer.Username, towerID, troopName)
-	if targetTower.IsAlive {
-		result += fmt.Sprintf("%s's %s tower has %d HP left.\n", opponent.Username, towerID, targetTower.Stats.HP)
-	} else {
-		result += fmt.Sprintf("%s's %s tower is destroyed!\n", opponent.Username, towerID)
+		msg := fmt.Sprintf("Tower %s is already destroyed.\n", towerType)
+		currentPlayer.Conn.Write([]byte(msg))
+		return msg
 	}
 
-	return result
+	isValid, msg := isValidAttack(targetTower, opponent)
+	if !isValid {
+		currentPlayer.Conn.Write([]byte(msg))
+		return msg
+	} else {
+		damage := CalculateDamage(troop.Stats.ATK, targetTower.Stats.DEF)
+		targetTower.Stats.HP -= damage
+		if targetTower.Stats.HP <= 0 {
+			targetTower.IsAlive = false
+			targetTower.Stats.HP = 0
+		}
+		result := fmt.Sprintf("You attacks %s with %s!\n", towerType, troopName)
+		if targetTower.IsAlive {
+			result += fmt.Sprintf("Opponent's %s tower has %d HP left.\n", towerType, targetTower.Stats.HP)
+		} else {
+			result += fmt.Sprintf("Opponent's %s tower is destroyed!\n", towerType)
+		}
+
+		opponentResult := fmt.Sprintf("%s attacks your %s tower with %s!\n", currentPlayer.Username, towerType, troopName)
+		if targetTower.IsAlive {
+			opponentResult += fmt.Sprintf("Your %s tower has %d HP left.\n", towerType, targetTower.Stats.HP)
+		} else {
+			opponentResult += fmt.Sprintf("Your %s tower is destroyed!\n", towerType)
+		}
+
+		currentPlayer.Conn.Write([]byte(result))
+		opponent.Conn.Write([]byte(opponentResult))
+		return result
+	}
 }
 func isGameOver(player *Player) bool {
 	for _, tower := range player.Towers {
@@ -297,6 +322,28 @@ func isGameOver(player *Player) bool {
 		}
 	}
 	return false
+}
+
+func isValidAttack(targetTower *Tower, opponent *Player) (bool, string) {
+	var guard1Alive, guard2Alive bool
+
+	for _, tower := range opponent.Towers {
+		if tower.ID == "G1" && tower.IsAlive {
+			guard1Alive = true
+		}
+		if tower.ID == "G2" && tower.IsAlive {
+			guard2Alive = true
+		}
+	}
+
+	if targetTower.ID == "G2" && guard1Alive {
+		return false, "You must destroy Guard Tower 1 before attacking Guard Tower 2.\n"
+	}
+	if targetTower.ID == "K" && (guard1Alive || guard2Alive) {
+		return false, "You must destroy both Guard Towers before attacking the King Tower.\n"
+	}
+
+	return true, ""
 }
 
 func setupPlayerAssets(player *Player) {
@@ -311,14 +358,14 @@ func setupPlayerAssets(player *Player) {
 			IsAlive:  true,
 		},
 		{
-			ID:       "G",
+			ID:       "G1",
 			Type:     GuardTower,
 			Position: 1,
 			Stats:    guardStats,
 			IsAlive:  true,
 		},
 		{
-			ID:       "G",
+			ID:       "G2",
 			Type:     GuardTower,
 			Position: 2,
 			Stats:    guardStats,
