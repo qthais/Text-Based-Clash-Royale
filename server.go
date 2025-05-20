@@ -72,8 +72,14 @@ type User struct {
 	Addresses []string
 }
 
-func CalculateDamage(attackerATK, defenderDEF int) int {
-	damage := attackerATK - defenderDEF
+func CalculateDamage(attacker TroopStats, defender TowerStats) int {
+	isCritical := rand.Float32() < defender.CRIT
+	attack := attacker.ATK
+	if isCritical {
+		additionalDamage := float32(attack) * 1.2
+		attack = attack + int(additionalDamage)
+	}
+	damage := attack - defender.DEF
 	if damage < 0 {
 		return 0
 	}
@@ -299,7 +305,7 @@ func applyMove(currentPlayer *Player, opponent *Player, input string) (bool, str
 		currentPlayer.Conn.Write([]byte(msg))
 		return false, msg
 	} else {
-		damage := CalculateDamage(troop.Stats.ATK, targetTower.Stats.DEF)
+		damage := CalculateDamage(troop.Stats, targetTower.Stats)
 		targetTower.Stats.HP -= damage
 		destroyed := false
 		if targetTower.Stats.HP <= 0 {
