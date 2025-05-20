@@ -192,6 +192,7 @@ func gameLoop(player1, player2 Player) {
 
 	for {
 		var currentPlayer, opponent *Player
+		var destroyFlag bool = false
 		if game.Turn == 1 {
 			currentPlayer = game.Player1
 			opponent = game.Player2
@@ -199,24 +200,31 @@ func gameLoop(player1, player2 Player) {
 			currentPlayer = game.Player2
 			opponent = game.Player1
 		}
+		for {
 
-		currentPlayer.Conn.Write([]byte("Your turn. Type the name of your troop and target tower (e.g., Goblin G1):\n"))
-		opponent.Conn.Write([]byte("Waiting for the other player's move...\n"))
+			currentPlayer.Conn.Write([]byte("Your turn. Type the name of your troop and target tower (e.g., Goblin G1):\n"))
+			opponent.Conn.Write([]byte("Waiting for the other player's move...\n"))
 
-		reader := bufio.NewReader(currentPlayer.Conn)
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			fmt.Println("Connection lost with", currentPlayer.Username)
+			reader := bufio.NewReader(currentPlayer.Conn)
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				// fmt.Println("Connection lost with", currentPlayer.Username)
+				break
+			}
+
+			input = strings.TrimSpace(input)
+			if input == "exit" {
+				currentPlayer.Conn.Write([]byte("You exited the game.\n"))
+				break
+			}
+
+			destroyed, moveResult := applyMove(currentPlayer, opponent, input)
+			destroyFlag = destroyed
+			if strings.HasPrefix(moveResult, "Invalid") {
+				continue
+			}
 			break
 		}
-
-		input = strings.TrimSpace(input)
-		if input == "exit" {
-			currentPlayer.Conn.Write([]byte("You exited the game.\n"))
-			break
-		}
-
-		applyMove(currentPlayer, opponent, input)
 
 		if isGameOver(opponent) {
 			currentPlayer.Conn.Write([]byte("You win!\n"))
@@ -224,11 +232,12 @@ func gameLoop(player1, player2 Player) {
 			break
 		}
 
-		// Alternate turn
-		if game.Turn == 1 {
-			game.Turn = 2
-		} else {
-			game.Turn = 1
+		if !destroyFlag {
+			if game.Turn == 1 {
+				game.Turn = 2
+			} else {
+				game.Turn = 1
+			}
 		}
 	}
 }
@@ -245,13 +254,13 @@ func sendTroopPool(player *Player) {
 	player.Conn.Write([]byte(troopPoolMessage))
 }
 
-func applyMove(currentPlayer *Player, opponent *Player, input string) string {
+func applyMove(currentPlayer *Player, opponent *Player, input string) (bool, string) {
 	parts := strings.Fields(input)
 
 	if len(parts) != 2 {
 		msg := "Invalid move format. Use 'TroopName TowerType'.\n"
 		currentPlayer.Conn.Write([]byte(msg))
-		return msg
+		return false, msg
 	}
 	troopName := parts[0]
 	towerType := parts[1]
@@ -263,9 +272,9 @@ func applyMove(currentPlayer *Player, opponent *Player, input string) string {
 		}
 	}
 	if troop == nil {
-		msg := fmt.Sprintf("Troop %s not found.\n", troopName)
+		msg := fmt.Sprintf("Invalid attack, Troop %s not found.\n", troopName)
 		currentPlayer.Conn.Write([]byte(msg))
-		return msg
+		return false, msg
 	}
 	var targetTower *Tower
 	for i := range opponent.Towers {
@@ -275,26 +284,28 @@ func applyMove(currentPlayer *Player, opponent *Player, input string) string {
 		}
 	}
 	if targetTower == nil {
-		msg := fmt.Sprintf("Target tower %s not found.\n", towerType)
+		msg := fmt.Sprintf("Invalid attack, Target tower %s not found.\n", towerType)
 		currentPlayer.Conn.Write([]byte(msg))
-		return msg
+		return false, msg
 	}
 	if !targetTower.IsAlive {
-		msg := fmt.Sprintf("Tower %s is already destroyed.\n", towerType)
+		msg := fmt.Sprintf("Invalid attack, Tower %s is already destroyed.\n", towerType)
 		currentPlayer.Conn.Write([]byte(msg))
-		return msg
+		return false, msg
 	}
 
 	isValid, msg := isValidAttack(targetTower, opponent)
 	if !isValid {
 		currentPlayer.Conn.Write([]byte(msg))
-		return msg
+		return false, msg
 	} else {
 		damage := CalculateDamage(troop.Stats.ATK, targetTower.Stats.DEF)
 		targetTower.Stats.HP -= damage
+		destroyed := false
 		if targetTower.Stats.HP <= 0 {
 			targetTower.IsAlive = false
 			targetTower.Stats.HP = 0
+			destroyed = true
 		}
 		result := fmt.Sprintf("You attacks %s with %s!\n", towerType, troopName)
 		if targetTower.IsAlive {
@@ -312,7 +323,7 @@ func applyMove(currentPlayer *Player, opponent *Player, input string) string {
 
 		currentPlayer.Conn.Write([]byte(result))
 		opponent.Conn.Write([]byte(opponentResult))
-		return result
+		return destroyed, result
 	}
 }
 func isGameOver(player *Player) bool {
@@ -337,10 +348,10 @@ func isValidAttack(targetTower *Tower, opponent *Player) (bool, string) {
 	}
 
 	if targetTower.ID == "G2" && guard1Alive {
-		return false, "You must destroy Guard Tower 1 before attacking Guard Tower 2.\n"
+		return false, "Invalid attack, you must destroy Guard Tower 1 before attacking Guard Tower 2.\n"
 	}
 	if targetTower.ID == "K" && (guard1Alive || guard2Alive) {
-		return false, "You must destroy both Guard Towers before attacking the King Tower.\n"
+		return false, "Invalid attack, You must destroy both Guard Towers before attacking the King Tower.\n"
 	}
 
 	return true, ""
