@@ -2,23 +2,15 @@
   {
     "Username": "thai",
     "Password": "03ac674216f3e15c761ee1a5e255f067953623c8b388b4459e13f978d7c846f4",
-    "Fullname": "nguyen thai",
-    "Emails": [
-      "thai@gmail.com"
-    ],
-    "Addresses": [
-      "long an"
-    ]
+    "Fullname": "",
+    "EXP": 0,
+    "Level": 0
   },
   {
     "Username": "thai2",
     "Password": "310ced37200b1a0dae25edb263fe52c491f6e467268acab0ffec06666e2ed959",
-    "Fullname": "quoc thai",
-    "Emails": [
-      "thai@gmail.com"
-    ],
-    "Addresses": [
-      "long an"
-    ]
+    "Fullname": "",
+    "EXP": 69,
+    "Level": 3
   }
 ]

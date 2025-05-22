@@ -6,92 +6,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"net"
 	"os"
+	. "project/dto"
 	"strings"
+	"sync"
 	"time"
 )
-
-type TowerStats struct {
-	HP   int
-	ATK  int
-	DEF  int
-	CRIT float32
-	EXP  int
-}
-type TroopStats struct {
-	HP   int
-	ATK  int
-	DEF  int
-	MANA int
-	EXP  int
-}
-
-type TowerType string
-type TroopType string
-
-const (
-	KingTower  TowerType = "King"
-	GuardTower TowerType = "Guard"
-)
-const (
-	PawnTroop   TroopType = "Pawn"
-	BishopTroop TroopType = "Bishop"
-	RookTroop   TroopType = "Rook"
-	KnightTroop TroopType = "Knight"
-	PrinceTroop TroopType = "Prince"
-	QueenTroop  TroopType = "Queen"
-)
-
-type Troop struct {
-	ID    string
-	Name  string
-	Type  TroopType
-	Stats TroopStats
-}
-
-type Tower struct {
-	ID       string
-	Type     TowerType
-	Position int //0 for King; 1,2 for Guard
-	Stats    TowerStats
-	IsAlive  bool
-}
-type GameState struct {
-	Player1 *Player
-	Player2 *Player
-	Turn    int // Alternates between 1 and 2
-}
-
-type User struct {
-	Username  string
-	Password  string
-	Fullname  string
-	Emails    []string
-	Addresses []string
-}
-
-func CalculateDamage(attacker TroopStats, defender TowerStats) int {
-	isCritical := rand.Float32() < defender.CRIT
-	attack := attacker.ATK
-	if isCritical {
-		additionalDamage := float32(attack) * 1.2
-		attack = attack + int(additionalDamage)
-	}
-	damage := attack - defender.DEF
-	if damage < 0 {
-		return 0
-	}
-	return damage
-}
-
-type Player struct {
-	Username string
-	Conn     net.Conn
-	Towers   []Tower
-	Troops   []Troop
-}
 
 func HashPassword(password string) string {
 	hash := sha256.Sum256([]byte(password))
@@ -126,13 +49,27 @@ func authenticateUser(username, password string, users []User) (bool, User) {
 	return false, User{}
 }
 
-func contains(s []rune, e rune) bool {
-	for _, a := range s {
-		if a == e {
-			return true
+func CalculateDamage(attacker TroopStats, defender TowerStats) int {
+	isCritical := rand.Float32() < defender.CRIT
+	attack := attacker.ATK
+	if isCritical {
+		additionalDamage := float32(attack) * 1.2
+		attack = attack + int(additionalDamage)
+	}
+	damage := attack - defender.DEF
+	if damage < 0 {
+		return 0
+	}
+	return damage
+}
+func countDestroyedTowers(player *Player) int {
+	count := 0
+	for _, t := range player.Towers {
+		if !t.IsAlive {
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func handleClient(conn net.Conn, users []User, players chan Player) {
@@ -158,13 +95,13 @@ func handleClient(conn net.Conn, users []User, players chan Player) {
 			writer.Flush()
 			continue
 		} else {
-			newPlayer := Player{Username: user.Username, Conn: conn}
+			newPlayer := Player{Username: user.Username, Conn: conn, User: &user}
 			players <- newPlayer
 			break
 		}
 	}
 
-	writer.WriteString(fmt.Sprintf("Welcome, %s! You're now connected.\n", user.Fullname))
+	writer.WriteString(fmt.Sprintf("Welcome, %s (Level %d)! You're now connected.\n", user.Fullname, user.Level))
 	writer.Flush()
 
 }
@@ -180,14 +117,14 @@ func chat(player1, player2 Player) {
 }
 
 func gameLoop(player1, player2 Player) {
+	gameOver := make(chan bool)
+	mutex := &sync.Mutex{}
+
 	game := GameState{
 		Player1: &player1,
 		Player2: &player2,
-		Turn:    1,
 	}
 
-	// Initialize towers and troops for both players
-	// (you'll need to implement this)
 	setupPlayerAssets(game.Player1)
 	setupPlayerAssets(game.Player2)
 	sendTroopPool(&player1)
@@ -196,57 +133,72 @@ func gameLoop(player1, player2 Player) {
 	player1.Conn.Write([]byte("Game started! You are Player 1.\n"))
 	player2.Conn.Write([]byte("Game started! You are Player 2.\n"))
 
-	for {
-		var currentPlayer, opponent *Player
-		var destroyFlag bool = false
-		if game.Turn == 1 {
-			currentPlayer = game.Player1
-			opponent = game.Player2
+	go listenForMoves(game.Player1, game.Player2, gameOver, mutex)
+	go listenForMoves(game.Player2, game.Player1, gameOver, mutex)
+
+	// Timer logic: run for 3 minutes
+	timer := time.NewTimer(3 * time.Minute)
+
+	select {
+	case <-gameOver:
+		saveUsers([]User{*game.Player1.User, *game.Player2.User}, "users.json")
+		// A King Tower was destroyed, already handled
+		return
+	case <-timer.C:
+		// Time's up, determine winner
+		destroyedByP1 := countDestroyedTowers(game.Player2)
+		destroyedByP2 := countDestroyedTowers(game.Player1)
+
+		if destroyedByP1 > destroyedByP2 {
+			gainExp(game.Player1.User, 30, game.Player1)
+			gainExp(game.Player2.User, 0, game.Player2)
+			player1.Conn.Write([]byte("Time's up! You win by destroying more towers.\n"))
+			player2.Conn.Write([]byte("Time's up! You lose.\n"))
+		} else if destroyedByP2 > destroyedByP1 {
+			gainExp(game.Player1.User, 0, game.Player1)
+			gainExp(game.Player2.User, 30, game.Player2)
+			player2.Conn.Write([]byte("Time's up! You win by destroying more towers.\n"))
+			player1.Conn.Write([]byte("Time's up! You lose.\n"))
 		} else {
-			currentPlayer = game.Player2
-			opponent = game.Player1
+			player1.Conn.Write([]byte("Time's up! It's a draw.\n"))
+			player2.Conn.Write([]byte("Time's up! It's a draw.\n"))
 		}
-		for {
+		saveUsers([]User{*game.Player1.User, *game.Player2.User}, "users.json")
+	}
+}
 
-			currentPlayer.Conn.Write([]byte("Your turn. Type the name of your troop and target tower (e.g., Goblin G1):\n"))
-			opponent.Conn.Write([]byte("Waiting for the other player's move...\n"))
+func listenForMoves(currentPlayer *Player, opponent *Player, gameOver chan bool, mutex *sync.Mutex) {
+	reader := bufio.NewReader(currentPlayer.Conn)
 
-			reader := bufio.NewReader(currentPlayer.Conn)
-			input, err := reader.ReadString('\n')
-			if err != nil {
-				// fmt.Println("Connection lost with", currentPlayer.Username)
-				break
-			}
-
-			input = strings.TrimSpace(input)
-			if input == "exit" {
-				currentPlayer.Conn.Write([]byte("You exited the game.\n"))
-				break
-			}
-
-			destroyed, moveResult := applyMove(currentPlayer, opponent, input)
-			destroyFlag = destroyed
-			if strings.HasPrefix(moveResult, "Invalid") {
-				continue
-			}
-			break
+	for {
+		currentPlayer.Conn.Write([]byte("Type your move (e.g., Pawn G1):\n"))
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			fmt.Printf("Connection lost with %s\n", currentPlayer.Username)
+			gameOver <- true
+			return
+		}
+		input = strings.TrimSpace(input)
+		if input == "exit" {
+			currentPlayer.Conn.Write([]byte("You exited the game.\n"))
+			opponent.Conn.Write([]byte("Opponent exited. Game over.\n"))
+			gameOver <- true
+			return
 		}
 
-		if isGameOver(opponent) {
-			currentPlayer.Conn.Write([]byte("You win!\n"))
-			opponent.Conn.Write([]byte("You lose.\n"))
-			break
-		}
+		mutex.Lock()
+		applyMove(currentPlayer, opponent, input)
+		mutex.Unlock()
 
-		if !destroyFlag {
-			if game.Turn == 1 {
-				game.Turn = 2
-			} else {
-				game.Turn = 1
-			}
+		// Check if opponent’s King Tower is destroyed
+		if isGameOver(opponent, gameOver) {
+			currentPlayer.Conn.Write([]byte("You destroyed the King Tower! You win!\n"))
+			opponent.Conn.Write([]byte("Your King Tower was destroyed. You lose.\n"))
+			return
 		}
 	}
 }
+
 func sendTroopPool(player *Player) {
 	troopPoolMessage := "Your available Troops:\n"
 
@@ -311,6 +263,11 @@ func applyMove(currentPlayer *Player, opponent *Player, input string) (bool, str
 		if targetTower.Stats.HP <= 0 {
 			targetTower.IsAlive = false
 			targetTower.Stats.HP = 0
+			leveledUp := gainExp(currentPlayer.User, targetTower.Stats.EXP, currentPlayer)
+			currentPlayer.Conn.Write([]byte(fmt.Sprintf("You gain %d exp", targetTower.Stats.EXP)))
+			if leveledUp {
+				currentPlayer.Conn.Write([]byte("Level up! Your stats increased by 10%!\n"))
+			}
 			destroyed = true
 		}
 		result := fmt.Sprintf("You attacks %s with %s!\n", towerType, troopName)
@@ -332,15 +289,51 @@ func applyMove(currentPlayer *Player, opponent *Player, input string) (bool, str
 		return destroyed, result
 	}
 }
-func isGameOver(player *Player) bool {
+func isGameOver(player *Player, gameOver chan bool) bool {
 	for _, tower := range player.Towers {
 		if tower.Type == KingTower && !tower.IsAlive {
+			gameOver <- true
 			return true
 		}
 	}
 	return false
 }
 
+func gainExp(user *User, amount int, player *Player) bool {
+	leveledUp := false
+	user.EXP += amount
+	baseExp := 100
+	for {
+		requiredExpToLevelUp := int(float64(baseExp) * math.Pow(1.1, float64(user.Level)))
+		if user.EXP >= requiredExpToLevelUp {
+			user.EXP -= requiredExpToLevelUp
+			user.Level++
+			leveledUp = true
+			applyLeveledUpBuff(player)
+		} else {
+			break
+		}
+	}
+	return leveledUp
+}
+
+func applyLeveledUpBuff(player *Player) {
+	for i := range player.Towers {
+		tower := &player.Towers[i]
+		tower.Stats.HP = int(float64(tower.Stats.HP) * 1.1)
+		tower.Stats.ATK = int(float64(tower.Stats.ATK) * 1.1)
+		tower.Stats.DEF = int(float64(tower.Stats.DEF) * 1.1)
+		tower.Stats.EXP = int(float64(tower.Stats.EXP) * 1.1)
+	}
+	for i := range player.Troops {
+		tr := &player.Troops[i]
+		tr.Stats.HP = int(float64(tr.Stats.HP) * 1.1)
+		tr.Stats.ATK = int(float64(tr.Stats.ATK) * 1.1)
+		tr.Stats.DEF = int(float64(tr.Stats.DEF) * 1.1)
+		tr.Stats.MANA = int(float64(tr.Stats.MANA) * 1.1)
+		tr.Stats.EXP = int(float64(tr.Stats.EXP) * 1.1)
+	}
+}
 func isValidAttack(targetTower *Tower, opponent *Player) (bool, string) {
 	var guard1Alive, guard2Alive bool
 
@@ -364,8 +357,23 @@ func isValidAttack(targetTower *Tower, opponent *Player) (bool, string) {
 }
 
 func setupPlayerAssets(player *Player) {
-	kingStats := TowerStats{HP: 2000, ATK: 500, DEF: 300, CRIT: 0.1, EXP: 200}
-	guardStats := TowerStats{HP: 1000, ATK: 300, DEF: 100, CRIT: 0.05, EXP: 100}
+	level := player.User.Level
+	multiplier := math.Pow(1.1, float64(level))
+	kingStats := TowerStats{
+		HP:   int(2000 * multiplier),
+		ATK:  int(500 * multiplier),
+		DEF:  int(300 * multiplier),
+		CRIT: 0.1, // optional: keep constant or increase too?
+		EXP:  int(200 * multiplier),
+	}
+
+	guardStats := TowerStats{
+		HP:   int(1000 * multiplier),
+		ATK:  int(300 * multiplier),
+		DEF:  int(100 * multiplier),
+		CRIT: 0.05,
+		EXP:  int(100 * multiplier),
+	}
 	player.Towers = []Tower{
 		{
 			ID:       "K",
@@ -426,6 +434,14 @@ func setupPlayerAssets(player *Player) {
 			Type:  QueenTroop,
 			Stats: TroopStats{MANA: 5, EXP: 30},
 		},
+	}
+	for i := range troopPool {
+		t := &troopPool[i]
+		t.Stats.HP = int(float64(t.Stats.HP) * multiplier)
+		t.Stats.ATK = int(float64(t.Stats.ATK) * multiplier)
+		t.Stats.DEF = int(float64(t.Stats.DEF) * multiplier)
+		t.Stats.MANA = int(float64(t.Stats.MANA) * multiplier)
+		t.Stats.EXP = int(float64(t.Stats.EXP) * multiplier)
 	}
 	rand.Shuffle(len(troopPool), func(i, j int) {
 		troopPool[i], troopPool[j] = troopPool[j], troopPool[i]
