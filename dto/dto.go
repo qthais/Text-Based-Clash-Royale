@@ -1,6 +1,9 @@
 package dto
 
-import "net"
+import (
+	"net"
+	"sync"
+)
 
 type Player struct {
 	Username string
@@ -8,6 +11,8 @@ type Player struct {
 	Towers   []Tower
 	Troops   []Troop
 	User     *User
+	Mana     int
+	ManaLock sync.Mutex
 }
 type TowerStats struct {
 	HP   int

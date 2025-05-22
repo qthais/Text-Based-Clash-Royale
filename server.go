@@ -72,7 +72,7 @@ func countDestroyedTowers(player *Player) int {
 	return count
 }
 
-func handleClient(conn net.Conn, users []User, players chan Player) {
+func handleClient(conn net.Conn, users []User, players chan *Player) {
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
 	var ok bool
@@ -95,8 +95,8 @@ func handleClient(conn net.Conn, users []User, players chan Player) {
 			writer.Flush()
 			continue
 		} else {
-			newPlayer := Player{Username: user.Username, Conn: conn, User: &user}
-			players <- newPlayer
+			newPlayer := Player{Username: user.Username, Conn: conn, User: &user, Mana: 5}
+			players <- &newPlayer
 			break
 		}
 	}
@@ -105,7 +105,7 @@ func handleClient(conn net.Conn, users []User, players chan Player) {
 	writer.Flush()
 
 }
-func chat(player1, player2 Player) {
+func chat(player1, player2 *Player) {
 	fmt.Println("Starting game between", player1.Username, "and", player2.Username)
 
 	// Inform both players that the game/chat is starting
@@ -116,26 +116,38 @@ func chat(player1, player2 Player) {
 	go gameLoop(player1, player2)
 }
 
-func gameLoop(player1, player2 Player) {
+func gameLoop(player1, player2 *Player) {
 	gameOver := make(chan bool)
 	mutex := &sync.Mutex{}
 
 	game := GameState{
-		Player1: &player1,
-		Player2: &player2,
+		Player1: player1,
+		Player2: player2,
 	}
 
 	setupPlayerAssets(game.Player1)
 	setupPlayerAssets(game.Player2)
-	sendTroopPool(&player1)
-	sendTroopPool(&player2)
+	sendTroopPool(player1)
+	sendTroopPool(player2)
 
 	player1.Conn.Write([]byte("Game started! You are Player 1.\n"))
 	player2.Conn.Write([]byte("Game started! You are Player 2.\n"))
 
 	go listenForMoves(game.Player1, game.Player2, gameOver, mutex)
 	go listenForMoves(game.Player2, game.Player1, gameOver, mutex)
-
+	go func(p1, p2 *Player) {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-gameOver:
+				return
+			case <-ticker.C:
+				incrementMana(p1)
+				incrementMana(p2)
+			}
+		}
+	}(game.Player1, game.Player2)
 	// Timer logic: run for 3 minutes
 	timer := time.NewTimer(3 * time.Minute)
 
@@ -191,7 +203,7 @@ func listenForMoves(currentPlayer *Player, opponent *Player, gameOver chan bool,
 		mutex.Unlock()
 
 		// Check if opponent’s King Tower is destroyed
-		if isGameOver(opponent, gameOver) {
+		if isGameOver(opponent, gameOver) || isGameOver(currentPlayer, gameOver) {
 			currentPlayer.Conn.Write([]byte("You destroyed the King Tower! You win!\n"))
 			opponent.Conn.Write([]byte("Your King Tower was destroyed. You lose.\n"))
 			return
@@ -257,6 +269,15 @@ func applyMove(currentPlayer *Player, opponent *Player, input string) (bool, str
 		currentPlayer.Conn.Write([]byte(msg))
 		return false, msg
 	} else {
+		currentPlayer.ManaLock.Lock()
+		if currentPlayer.Mana < troop.Stats.MANA {
+			currentPlayer.ManaLock.Unlock()
+			msg := "Not enough mana to summon this troop.\n"
+			currentPlayer.Conn.Write([]byte(msg))
+			return false, msg
+		}
+		currentPlayer.Mana -= troop.Stats.MANA
+		currentPlayer.ManaLock.Unlock()
 		damage := CalculateDamage(troop.Stats, targetTower.Stats)
 		targetTower.Stats.HP -= damage
 		destroyed := false
@@ -315,6 +336,14 @@ func gainExp(user *User, amount int, player *Player) bool {
 		}
 	}
 	return leveledUp
+}
+func incrementMana(p *Player) {
+	p.ManaLock.Lock()
+	defer p.ManaLock.Unlock()
+	if p.Mana < 10 {
+		p.Mana++
+		p.Conn.Write([]byte(fmt.Sprintf("Mana increased to %d\n", p.Mana)))
+	}
 }
 
 func applyLeveledUpBuff(player *Player) {
@@ -468,7 +497,7 @@ func main() {
 	defer listener.Close()
 
 	fmt.Println("Server listening on port 8080...")
-	players := make(chan Player)
+	players := make(chan *Player)
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
